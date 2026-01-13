@@ -7,11 +7,14 @@ import type {
   Cart,
   Customer,
 } from "../sdk";
+import { PromptSanitizer, type SanitizerConfig, type SanitizationResult } from "./sanitizer";
 
 export interface UCPAgentConfig {
   anthropicApiKey: string;
   merchantEndpoint: string;
   model?: string;
+  sanitizerConfig?: SanitizerConfig;
+  onSanitizationViolation?: (input: string, result: SanitizationResult) => void;
 }
 
 const SYSTEM_PROMPT = `You are a UCP (Universal Commerce Protocol) shopping assistant agent. You help users discover products, manage their cart, and complete purchases through UCP-compliant merchants.
@@ -139,12 +142,14 @@ export class UCPClaudeAgent {
   private conversationHistory: MessageParam[] = [];
   private currentSession: CheckoutSession | null = null;
   private merchantCapabilities: UCPDiscoveryResponse | null = null;
+  private sanitizer: PromptSanitizer;
 
   constructor(config: UCPAgentConfig) {
     this.config = config;
     this.client = new Anthropic({
       apiKey: config.anthropicApiKey,
     });
+    this.sanitizer = new PromptSanitizer(config.sanitizerConfig);
   }
 
   async discoverMerchant(): Promise<UCPDiscoveryResponse> {
@@ -273,10 +278,26 @@ export class UCPClaudeAgent {
   }
 
   async chat(userMessage: string): Promise<string> {
+    // Sanitize user input before processing
+    const sanitizationResult = this.sanitizer.sanitize(userMessage);
+
+    if (!sanitizationResult.safe) {
+      // Log the violation if callback provided
+      if (this.config.onSanitizationViolation) {
+        this.config.onSanitizationViolation(userMessage, sanitizationResult);
+      } else {
+        PromptSanitizer.logViolation(userMessage, sanitizationResult);
+      }
+      return PromptSanitizer.getRejectionMessage();
+    }
+
+    // Use sanitized input (normalized unicode, trimmed length)
+    const safeMessage = sanitizationResult.sanitized;
+
     // Add user message to history
     this.conversationHistory.push({
       role: "user",
-      content: userMessage,
+      content: safeMessage,
     });
 
     let response = await this.client.messages.create({
