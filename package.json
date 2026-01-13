@@ -9,8 +9,12 @@
     "start": "bun run index.ts",
     "dev": "bun run --watch index.ts",
     "mcp": "bun run src/mcp/run-mcp.ts",
+    "cli": "bun run src/cli/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
+  },
+  "bin": {
+    "ucp": "./src/cli/index.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
