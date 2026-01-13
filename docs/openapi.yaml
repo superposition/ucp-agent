@@ -1,0 +1,404 @@
+openapi: 3.1.0
+info:
+  title: UCP Agent API
+  description: Universal Commerce Protocol (UCP) merchant server API
+  version: 1.0.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+paths:
+  /.well-known/ucp:
+    get:
+      summary: UCP Discovery
+      description: Discover merchant UCP capabilities
+      operationId: discoverMerchant
+      tags: [Discovery]
+      responses:
+        '200':
+          description: UCP discovery response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UCPDiscoveryResponse'
+
+  /ucp/checkout:
+    post:
+      summary: Create Checkout Session
+      description: Create a new checkout session with cart items
+      operationId: createCheckout
+      tags: [Checkout]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCheckoutRequest'
+      responses:
+        '201':
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /ucp/checkout/{sessionId}:
+    get:
+      summary: Get Checkout Session
+      operationId: getCheckout
+      tags: [Checkout]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Checkout session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutSession'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update Checkout Session
+      operationId: updateCheckout
+      tags: [Checkout]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCheckoutRequest'
+      responses:
+        '200':
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutSession'
+
+  /ucp/checkout/{sessionId}/shipping-options:
+    get:
+      summary: Get Shipping Options
+      operationId: getShippingOptions
+      tags: [Shipping]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Available shipping options
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  options:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ShippingOption'
+
+  /ucp/checkout/{sessionId}/discount:
+    post:
+      summary: Apply Discount Code
+      operationId: applyDiscount
+      tags: [Discounts]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: Discount applied
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /ucp/checkout/{sessionId}/complete:
+    post:
+      summary: Complete Checkout
+      operationId: completeCheckout
+      tags: [Checkout]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paymentMethod:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    token:
+                      type: string
+      responses:
+        '200':
+          description: Checkout completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  orderId:
+                    type: string
+                  orderNumber:
+                    type: string
+
+  /ucp/orders:
+    get:
+      summary: List Orders
+      operationId: listOrders
+      tags: [Orders]
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Order list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Order'
+                  total:
+                    type: integer
+
+  /ucp/orders/{orderId}:
+    get:
+      summary: Get Order
+      operationId: getOrder
+      tags: [Orders]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+components:
+  parameters:
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: string
+        currency:
+          type: string
+
+    Address:
+      type: object
+      required: [line1, city, postalCode, country]
+      properties:
+        line1:
+          type: string
+        line2:
+          type: string
+        city:
+          type: string
+        region:
+          type: string
+        postalCode:
+          type: string
+        country:
+          type: string
+
+    LineItem:
+      type: object
+      required: [id, productId, name, quantity, unitPrice, totalPrice]
+      properties:
+        id:
+          type: string
+        productId:
+          type: string
+        name:
+          type: string
+        quantity:
+          type: integer
+        unitPrice:
+          $ref: '#/components/schemas/Money'
+        totalPrice:
+          $ref: '#/components/schemas/Money'
+
+    Cart:
+      type: object
+      required: [items, subtotal, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LineItem'
+        subtotal:
+          $ref: '#/components/schemas/Money'
+        total:
+          $ref: '#/components/schemas/Money'
+        shipping:
+          $ref: '#/components/schemas/Money'
+        discount:
+          $ref: '#/components/schemas/Money'
+
+    ShippingOption:
+      type: object
+      required: [id, name, price]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        price:
+          $ref: '#/components/schemas/Money'
+        estimatedDelivery:
+          type: string
+
+    CheckoutSession:
+      type: object
+      required: [id, merchantId, status, cart, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        merchantId:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, PROCESSING, COMPLETED, CANCELLED]
+        cart:
+          $ref: '#/components/schemas/Cart'
+        shippingAddress:
+          $ref: '#/components/schemas/Address'
+        billingAddress:
+          $ref: '#/components/schemas/Address'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateCheckoutRequest:
+      type: object
+      required: [merchantId, cart]
+      properties:
+        merchantId:
+          type: string
+        cart:
+          $ref: '#/components/schemas/Cart'
+        customer:
+          type: object
+
+    UpdateCheckoutRequest:
+      type: object
+      properties:
+        shippingAddress:
+          $ref: '#/components/schemas/Address'
+        billingAddress:
+          $ref: '#/components/schemas/Address'
+        selectedShippingOptionId:
+          type: string
+
+    Order:
+      type: object
+      required: [id, merchantId, orderNumber, status]
+      properties:
+        id:
+          type: string
+        merchantId:
+          type: string
+        orderNumber:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, PROCESSING, SHIPPED, DELIVERED, CANCELLED]
+        createdAt:
+          type: string
+          format: date-time
+
+    UCPDiscoveryResponse:
+      type: object
+      required: [version, merchantId, merchantName, services]
+      properties:
+        version:
+          type: string
+        merchantId:
+          type: string
+        merchantName:
+          type: string
+        services:
+          type: array
+          items:
+            type: object
+        supportedCurrencies:
+          type: array
+          items:
+            type: string
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
