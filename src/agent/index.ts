@@ -5,3 +5,10 @@ export {
   type SanitizationResult,
   type SanitizerConfig,
 } from "./sanitizer";
+export {
+  ConversationMemory,
+  SessionStore,
+  type MemoryConfig,
+  type ConversationState,
+  type ConversationSummary,
+} from "./memory";

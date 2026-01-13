@@ -8,13 +8,16 @@ import type {
   Customer,
 } from "../sdk";
 import { PromptSanitizer, type SanitizerConfig, type SanitizationResult } from "./sanitizer";
+import { ConversationMemory, type MemoryConfig } from "./memory";
 
 export interface UCPAgentConfig {
   anthropicApiKey: string;
   merchantEndpoint: string;
   model?: string;
   sanitizerConfig?: SanitizerConfig;
+  memoryConfig?: MemoryConfig;
   onSanitizationViolation?: (input: string, result: SanitizationResult) => void;
+  onSessionExpired?: () => void;
 }
 
 const SYSTEM_PROMPT = `You are a UCP (Universal Commerce Protocol) shopping assistant agent. You help users discover products, manage their cart, and complete purchases through UCP-compliant merchants.
@@ -139,9 +142,7 @@ interface UpdateCheckoutInput {
 export class UCPClaudeAgent {
   private client: Anthropic;
   private config: UCPAgentConfig;
-  private conversationHistory: MessageParam[] = [];
-  private currentSession: CheckoutSession | null = null;
-  private merchantCapabilities: UCPDiscoveryResponse | null = null;
+  private memory: ConversationMemory;
   private sanitizer: PromptSanitizer;
 
   constructor(config: UCPAgentConfig) {
@@ -150,6 +151,7 @@ export class UCPClaudeAgent {
       apiKey: config.anthropicApiKey,
     });
     this.sanitizer = new PromptSanitizer(config.sanitizerConfig);
+    this.memory = new ConversationMemory(config.memoryConfig);
   }
 
   async discoverMerchant(): Promise<UCPDiscoveryResponse> {
@@ -160,7 +162,7 @@ export class UCPClaudeAgent {
       throw new Error(`Discovery failed: ${response.statusText}`);
     }
     const data = (await response.json()) as UCPDiscoveryResponse;
-    this.merchantCapabilities = data;
+    this.memory.setMerchantCapabilities(data);
     return data;
   }
 
@@ -187,8 +189,9 @@ export class UCPClaudeAgent {
       total: { amount: subtotal.toFixed(2), currency },
     };
 
+    const capabilities = this.memory.getMerchantCapabilities();
     const request: CreateCheckoutRequest = {
-      merchantId: this.merchantCapabilities?.merchantId || "default-merchant",
+      merchantId: capabilities?.merchantId || "default-merchant",
       cart,
       customer: input.customerName || input.customerEmail
         ? {
@@ -215,7 +218,7 @@ export class UCPClaudeAgent {
       throw new Error(`Checkout creation failed: ${response.statusText}`);
     }
     const session = (await response.json()) as CheckoutSession;
-    this.currentSession = session;
+    this.memory.setCheckoutSession(session);
     return session;
   }
 
@@ -245,7 +248,7 @@ export class UCPClaudeAgent {
       throw new Error(`Update checkout failed: ${response.statusText}`);
     }
     const session = (await response.json()) as CheckoutSession;
-    this.currentSession = session;
+    this.memory.setCheckoutSession(session);
     return session;
   }
 
@@ -278,6 +281,14 @@ export class UCPClaudeAgent {
   }
 
   async chat(userMessage: string): Promise<string> {
+    // Check for session expiry
+    if (this.memory.isExpired()) {
+      if (this.config.onSessionExpired) {
+        this.config.onSessionExpired();
+      }
+      this.memory.reset();
+    }
+
     // Sanitize user input before processing
     const sanitizationResult = this.sanitizer.sanitize(userMessage);
 
@@ -294,26 +305,29 @@ export class UCPClaudeAgent {
     // Use sanitized input (normalized unicode, trimmed length)
     const safeMessage = sanitizationResult.sanitized;
 
-    // Add user message to history
-    this.conversationHistory.push({
+    // Add user message to memory
+    this.memory.addMessage({
       role: "user",
       content: safeMessage,
     });
+
+    // Get messages with context (includes summary if available)
+    const messages = this.memory.getMessagesWithContext();
 
     let response = await this.client.messages.create({
       model: this.config.model || "claude-sonnet-4-20250514",
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
       tools: UCP_TOOLS,
-      messages: this.conversationHistory,
+      messages,
     });
 
     // Process tool calls in a loop until we get a final response
     while (response.stop_reason === "tool_use") {
       const assistantContent = response.content;
 
-      // Add assistant's response (with tool use) to history
-      this.conversationHistory.push({
+      // Add assistant's response (with tool use) to memory
+      this.memory.addMessage({
         role: "assistant",
         content: assistantContent,
       });
@@ -332,19 +346,19 @@ export class UCPClaudeAgent {
         }
       }
 
-      // Add tool results to history
-      this.conversationHistory.push({
+      // Add tool results to memory
+      this.memory.addMessage({
         role: "user",
         content: toolResults,
       });
 
-      // Continue the conversation
+      // Continue the conversation with updated messages
       response = await this.client.messages.create({
         model: this.config.model || "claude-sonnet-4-20250514",
         max_tokens: 1024,
         system: SYSTEM_PROMPT,
         tools: UCP_TOOLS,
-        messages: this.conversationHistory,
+        messages: this.memory.getMessagesWithContext(),
       });
     }
 
@@ -352,8 +366,8 @@ export class UCPClaudeAgent {
     const textBlocks = response.content.filter((b) => b.type === "text");
     const finalText = textBlocks.map((b) => (b as { type: "text"; text: string }).text).join("\n");
 
-    // Add final response to history
-    this.conversationHistory.push({
+    // Add final response to memory
+    this.memory.addMessage({
       role: "assistant",
       content: response.content,
     });
@@ -362,14 +376,49 @@ export class UCPClaudeAgent {
   }
 
   getSession(): CheckoutSession | null {
-    return this.currentSession;
+    return this.memory.getCheckoutSession();
   }
 
   getCapabilities(): UCPDiscoveryResponse | null {
-    return this.merchantCapabilities;
+    return this.memory.getMerchantCapabilities();
   }
 
   clearHistory(): void {
-    this.conversationHistory = [];
+    this.memory.clearMessages();
+  }
+
+  /**
+   * Get the conversation memory instance for advanced operations
+   */
+  getMemory(): ConversationMemory {
+    return this.memory;
+  }
+
+  /**
+   * Get conversation statistics
+   */
+  getStats() {
+    return this.memory.getStats();
+  }
+
+  /**
+   * Reset the entire session including checkout and capabilities
+   */
+  resetSession(): void {
+    this.memory.reset();
+  }
+
+  /**
+   * Check if the session has expired
+   */
+  isSessionExpired(): boolean {
+    return this.memory.isExpired();
+  }
+
+  /**
+   * Get the current session ID
+   */
+  getSessionId(): string {
+    return this.memory.getSessionId();
   }
 }
