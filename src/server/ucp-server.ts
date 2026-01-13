@@ -10,12 +10,21 @@ import {
   CreateCheckoutRequestSchema,
 } from "../sdk";
 import { type PaymentHandler, MockPaymentHandler } from "../payments";
+import {
+  createSecurityMiddleware,
+  ucpAgentValidator,
+  type SecurityConfig,
+} from "./security";
 
 export interface UCPServerConfig {
   merchantId: string;
   merchantName: string;
   port?: number;
   paymentHandler?: PaymentHandler;
+  /** Security middleware configuration */
+  security?: SecurityConfig;
+  /** Require UCP-Agent header on all requests */
+  requireUCPAgent?: boolean;
 }
 
 // Sample shipping options
@@ -65,7 +74,22 @@ export function createUCPServer(config: UCPServerConfig) {
   // Payment handler (default to mock for testing)
   const paymentHandler = config.paymentHandler || new MockPaymentHandler();
 
+  // Security stores for external access
+  let securityStores: ReturnType<typeof createSecurityMiddleware>["stores"] | undefined;
+
   app.use("*", cors());
+
+  // Apply security middleware if configured
+  if (config.security) {
+    const security = createSecurityMiddleware(config.security);
+    securityStores = security.stores;
+    security.middleware.forEach((mw) => app.use("*", mw));
+  }
+
+  // Apply UCP-Agent validation if required
+  if (config.requireUCPAgent) {
+    app.use("/ucp/*", ucpAgentValidator({ required: true }));
+  }
 
   // ============================================
   // DISCOVERY
@@ -612,5 +636,8 @@ export function createUCPServer(config: UCPServerConfig) {
 
   app.get("/health", (c) => c.json({ status: "ok" }));
 
-  return app;
+  // Return app with security stores attached for testing/management
+  return Object.assign(app, {
+    securityStores,
+  });
 }
