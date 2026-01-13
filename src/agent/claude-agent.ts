@@ -9,6 +9,16 @@ import type {
 } from "../sdk";
 import { PromptSanitizer, type SanitizerConfig, type SanitizationResult } from "./sanitizer";
 import { ConversationMemory, type MemoryConfig } from "./memory";
+import {
+  fetchWithRetry,
+  createLogger,
+  getUserFriendlyMessage,
+  createErrorFromException,
+  withRecovery,
+  cachedStrategy,
+  type Logger,
+  type RetryConfig,
+} from "./errors";
 
 export interface UCPAgentConfig {
   anthropicApiKey: string;
@@ -16,8 +26,16 @@ export interface UCPAgentConfig {
   model?: string;
   sanitizerConfig?: SanitizerConfig;
   memoryConfig?: MemoryConfig;
+  /** Retry configuration for API calls */
+  retryConfig?: Partial<RetryConfig>;
+  /** Request timeout in milliseconds (default: 30000) */
+  timeoutMs?: number;
+  /** Enable debug logging */
+  debug?: boolean;
   onSanitizationViolation?: (input: string, result: SanitizationResult) => void;
   onSessionExpired?: () => void;
+  /** Callback when an error occurs */
+  onError?: (error: unknown, context: string) => void;
 }
 
 const SYSTEM_PROMPT = `You are a UCP (Universal Commerce Protocol) shopping assistant agent. You help users discover products, manage their cart, and complete purchases through UCP-compliant merchants.
@@ -144,6 +162,7 @@ export class UCPClaudeAgent {
   private config: UCPAgentConfig;
   private memory: ConversationMemory;
   private sanitizer: PromptSanitizer;
+  private logger: Logger;
 
   constructor(config: UCPAgentConfig) {
     this.config = config;
@@ -152,21 +171,58 @@ export class UCPClaudeAgent {
     });
     this.sanitizer = new PromptSanitizer(config.sanitizerConfig);
     this.memory = new ConversationMemory(config.memoryConfig);
+    this.logger = createLogger("UCPAgent", {
+      minLevel: config.debug ? "debug" : "info",
+    });
   }
 
   async discoverMerchant(): Promise<UCPDiscoveryResponse> {
-    const response = await fetch(
-      `${this.config.merchantEndpoint}/.well-known/ucp`
-    );
-    if (!response.ok) {
-      throw new Error(`Discovery failed: ${response.statusText}`);
+    const url = `${this.config.merchantEndpoint}/.well-known/ucp`;
+    this.logger.debug("Discovering merchant", { url });
+
+    // Use cached capabilities as fallback if network fails
+    const cachedCapabilities = this.memory.getMerchantCapabilities();
+
+    try {
+      const response = await withRecovery(
+        async () => {
+          const res = await fetchWithRetry(url, {
+            timeoutMs: this.config.timeoutMs,
+            retry: {
+              ...this.config.retryConfig,
+              onRetry: (attempt, error, delay) => {
+                this.logger.warn(`Discovery retry ${attempt}`, {
+                  error: error instanceof Error ? error.message : String(error),
+                  delayMs: delay,
+                });
+              },
+            },
+          });
+          return res;
+        },
+        cachedCapabilities
+          ? [cachedStrategy(() => cachedCapabilities)]
+          : []
+      );
+
+      const data = (await response.json()) as UCPDiscoveryResponse;
+      this.memory.setMerchantCapabilities(data);
+      this.logger.info("Merchant discovered", {
+        merchantId: data.merchantId,
+        merchantName: data.merchantName,
+      });
+      return data;
+    } catch (error) {
+      this.logger.error("Discovery failed", error);
+      this.config.onError?.(error, "discoverMerchant");
+      throw createErrorFromException(error, { url });
     }
-    const data = (await response.json()) as UCPDiscoveryResponse;
-    this.memory.setMerchantCapabilities(data);
-    return data;
   }
 
   async createCheckout(input: CreateCheckoutInput): Promise<CheckoutSession> {
+    const url = `${this.config.merchantEndpoint}/ucp/checkout`;
+    this.logger.debug("Creating checkout", { itemCount: input.items.length });
+
     // Build cart from input items
     let subtotal = 0;
     const lineItems = input.items.map((item, index) => {
@@ -203,56 +259,94 @@ export class UCPClaudeAgent {
         : undefined,
     };
 
-    const response = await fetch(
-      `${this.config.merchantEndpoint}/ucp/checkout`,
-      {
+    try {
+      const response = await fetchWithRetry(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "UCP-Agent": "claude-ucp-agent/1.0",
         },
         body: JSON.stringify(request),
-      }
-    );
-    if (!response.ok) {
-      throw new Error(`Checkout creation failed: ${response.statusText}`);
+        timeoutMs: this.config.timeoutMs,
+        retry: {
+          ...this.config.retryConfig,
+          onRetry: (attempt, error, delay) => {
+            this.logger.warn(`Checkout creation retry ${attempt}`, {
+              error: error instanceof Error ? error.message : String(error),
+              delayMs: delay,
+            });
+          },
+        },
+      });
+
+      const session = (await response.json()) as CheckoutSession;
+      this.memory.setCheckoutSession(session);
+      this.logger.info("Checkout created", {
+        sessionId: session.id,
+        total: session.cart.total.amount,
+      });
+      return session;
+    } catch (error) {
+      this.logger.error("Checkout creation failed", error);
+      this.config.onError?.(error, "createCheckout");
+      throw createErrorFromException(error, { url });
     }
-    const session = (await response.json()) as CheckoutSession;
-    this.memory.setCheckoutSession(session);
-    return session;
   }
 
   async getCheckout(sessionId: string): Promise<CheckoutSession> {
-    const response = await fetch(
-      `${this.config.merchantEndpoint}/ucp/checkout/${sessionId}`
-    );
-    if (!response.ok) {
-      throw new Error(`Get checkout failed: ${response.statusText}`);
+    const url = `${this.config.merchantEndpoint}/ucp/checkout/${sessionId}`;
+    this.logger.debug("Getting checkout", { sessionId });
+
+    try {
+      const response = await fetchWithRetry(url, {
+        timeoutMs: this.config.timeoutMs,
+        retry: this.config.retryConfig,
+      });
+      const session = (await response.json()) as CheckoutSession;
+      this.logger.debug("Checkout retrieved", { status: session.status });
+      return session;
+    } catch (error) {
+      this.logger.error("Get checkout failed", error, { sessionId });
+      this.config.onError?.(error, "getCheckout");
+      throw createErrorFromException(error, { url, sessionId });
     }
-    return (await response.json()) as CheckoutSession;
   }
 
   async updateCheckout(input: UpdateCheckoutInput): Promise<CheckoutSession> {
-    const response = await fetch(
-      `${this.config.merchantEndpoint}/ucp/checkout/${input.sessionId}`,
-      {
+    const url = `${this.config.merchantEndpoint}/ucp/checkout/${input.sessionId}`;
+    this.logger.debug("Updating checkout", { sessionId: input.sessionId });
+
+    try {
+      const response = await fetchWithRetry(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           shippingAddress: input.shippingAddress,
           discountCode: input.discountCode,
         }),
-      }
-    );
-    if (!response.ok) {
-      throw new Error(`Update checkout failed: ${response.statusText}`);
+        timeoutMs: this.config.timeoutMs,
+        retry: this.config.retryConfig,
+      });
+
+      const session = (await response.json()) as CheckoutSession;
+      this.memory.setCheckoutSession(session);
+      this.logger.info("Checkout updated", {
+        sessionId: session.id,
+        status: session.status,
+      });
+      return session;
+    } catch (error) {
+      this.logger.error("Update checkout failed", error, {
+        sessionId: input.sessionId,
+      });
+      this.config.onError?.(error, "updateCheckout");
+      throw createErrorFromException(error, { url, sessionId: input.sessionId });
     }
-    const session = (await response.json()) as CheckoutSession;
-    this.memory.setCheckoutSession(session);
-    return session;
   }
 
   private async executeTool(name: string, input: Record<string, unknown>): Promise<string> {
+    this.logger.debug(`Executing tool: ${name}`, { input });
+
     try {
       switch (name) {
         case "discover_merchant": {
@@ -273,10 +367,18 @@ export class UCPClaudeAgent {
           return JSON.stringify(result, null, 2);
         }
         default:
+          this.logger.warn(`Unknown tool requested: ${name}`);
           return JSON.stringify({ error: `Unknown tool: ${name}` });
       }
     } catch (error) {
-      return JSON.stringify({ error: String(error) });
+      this.logger.error(`Tool execution failed: ${name}`, error);
+      // Return user-friendly error message for Claude to communicate
+      const friendlyMessage = getUserFriendlyMessage(error);
+      return JSON.stringify({
+        error: true,
+        message: friendlyMessage,
+        details: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

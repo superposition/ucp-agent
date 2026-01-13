@@ -12,3 +12,35 @@ export {
   type ConversationState,
   type ConversationSummary,
 } from "./memory";
+export {
+  // Error types
+  UCPError,
+  NetworkError,
+  MerchantError,
+  ValidationError,
+  AuthError,
+  RateLimitError,
+  TimeoutError,
+  // Error utilities
+  getUserFriendlyMessage,
+  createErrorFromResponse,
+  createErrorFromException,
+  // Retry utilities
+  withRetry,
+  calculateRetryDelay,
+  isRetryableError,
+  fetchWithRetry,
+  // Logging
+  createLogger,
+  // Recovery strategies
+  withRecovery,
+  fallbackStrategy,
+  cachedStrategy,
+  // Types
+  type RetryConfig,
+  type FetchWithRetryOptions,
+  type Logger,
+  type LogLevel,
+  type LogEntry,
+  type RecoveryStrategy,
+} from "./errors";
