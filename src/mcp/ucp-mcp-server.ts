@@ -1,14 +1,39 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import {
-  CartSchema,
-  CustomerSchema,
-  MoneySchema,
-} from "../sdk";
 
 export interface MCPServerConfig {
   merchantEndpoint: string;
+}
+
+// Helper to create consistent tool responses
+function toolResponse(data: unknown, isError = false) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: typeof data === "string" ? data : JSON.stringify(data, null, 2),
+      },
+    ],
+    ...(isError && { isError: true }),
+  };
+}
+
+// Helper for API calls
+async function apiCall(
+  endpoint: string,
+  options?: RequestInit
+): Promise<{ ok: boolean; data: unknown; status: number }> {
+  const response = await fetch(endpoint, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "UCP-Agent": "mcp-ucp-server/1.0",
+      ...options?.headers,
+    },
+  });
+  const data = await response.json();
+  return { ok: response.ok, data, status: response.status };
 }
 
 export function createUCPMCPServer(config: MCPServerConfig) {
@@ -17,60 +42,51 @@ export function createUCPMCPServer(config: MCPServerConfig) {
     version: "1.0.0",
   });
 
-  // Tool: Discover merchant capabilities
+  // ============================================
+  // DISCOVERY
+  // ============================================
+
   server.tool(
     "discover_merchant",
-    "Discover UCP capabilities of a merchant via /.well-known/ucp endpoint",
+    "Discover UCP capabilities of a merchant via /.well-known/ucp endpoint. Call this first to understand what the merchant supports.",
     {},
     async () => {
       try {
-        const response = await fetch(`${config.merchantEndpoint}/.well-known/ucp`);
-        const discovery = await response.json();
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(discovery, null, 2),
-            },
-          ],
-        };
+        const { ok, data } = await apiCall(`${config.merchantEndpoint}/.well-known/ucp`);
+        return toolResponse(data, !ok);
       } catch (error) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error discovering merchant: ${error}`,
-            },
-          ],
-          isError: true,
-        };
+        return toolResponse(`Error discovering merchant: ${error}`, true);
       }
     }
   );
 
-  // Tool: Create checkout session
+  // ============================================
+  // CHECKOUT
+  // ============================================
+
   server.tool(
     "create_checkout",
-    "Create a new UCP checkout session",
+    "Create a new UCP checkout session with items in the cart. Returns a session ID for further operations.",
     {
       merchantId: z.string().describe("The merchant identifier"),
-      items: z.array(
-        z.object({
-          productId: z.string(),
-          name: z.string(),
-          quantity: z.number(),
-          unitPrice: z.object({
-            amount: z.string(),
-            currency: z.string(),
-          }),
-        })
-      ).describe("Cart items to checkout"),
+      items: z
+        .array(
+          z.object({
+            productId: z.string(),
+            name: z.string(),
+            quantity: z.number(),
+            unitPrice: z.object({
+              amount: z.string(),
+              currency: z.string(),
+            }),
+          })
+        )
+        .describe("Cart items to checkout"),
       customerEmail: z.string().email().optional().describe("Customer email"),
       customerName: z.string().optional().describe("Customer name"),
     },
     async ({ merchantId, items, customerEmail, customerName }) => {
       try {
-        // Build cart from items
         let subtotal = 0;
         const lineItems = items.map((item, index) => {
           const itemTotal = parseFloat(item.unitPrice.amount) * item.quantity;
@@ -98,124 +114,392 @@ export function createUCPMCPServer(config: MCPServerConfig) {
         const request = {
           merchantId,
           cart,
-          customer: customerEmail || customerName ? {
-            contact: {
-              name: customerName || "Customer",
-              email: customerEmail,
-            },
-          } : undefined,
+          customer:
+            customerEmail || customerName
+              ? {
+                  contact: {
+                    name: customerName || "Customer",
+                    email: customerEmail,
+                  },
+                }
+              : undefined,
         };
 
-        const response = await fetch(`${config.merchantEndpoint}/ucp/checkout`, {
+        const { ok, data } = await apiCall(`${config.merchantEndpoint}/ucp/checkout`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "UCP-Agent": "mcp-ucp-server/1.0",
-          },
           body: JSON.stringify(request),
         });
-
-        const session = await response.json();
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(session, null, 2),
-            },
-          ],
-        };
+        return toolResponse(data, !ok);
       } catch (error) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error creating checkout: ${error}`,
-            },
-          ],
-          isError: true,
-        };
+        return toolResponse(`Error creating checkout: ${error}`, true);
       }
     }
   );
 
-  // Tool: Get checkout session
   server.tool(
     "get_checkout",
-    "Get the current status of a checkout session",
+    "Get the current status and details of a checkout session.",
     {
       sessionId: z.string().describe("The checkout session ID"),
     },
     async ({ sessionId }) => {
       try {
-        const response = await fetch(
+        const { ok, data } = await apiCall(
           `${config.merchantEndpoint}/ucp/checkout/${sessionId}`
         );
-        const session = await response.json();
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(session, null, 2),
-            },
-          ],
-        };
+        return toolResponse(data, !ok);
       } catch (error) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error getting checkout: ${error}`,
-            },
-          ],
-          isError: true,
-        };
+        return toolResponse(`Error getting checkout: ${error}`, true);
       }
     }
   );
 
-  // Tool: Update checkout with shipping/billing
   server.tool(
     "update_checkout",
-    "Update a checkout session with shipping or billing information",
+    "Update a checkout session with shipping address, billing address, or other details.",
     {
       sessionId: z.string().describe("The checkout session ID"),
-      shippingAddress: z.object({
-        line1: z.string(),
-        city: z.string(),
-        postalCode: z.string(),
-        country: z.string(),
-      }).optional(),
-      discountCode: z.string().optional(),
+      shippingAddress: z
+        .object({
+          line1: z.string(),
+          line2: z.string().optional(),
+          city: z.string(),
+          region: z.string().optional(),
+          postalCode: z.string(),
+          country: z.string().describe("2-letter country code"),
+        })
+        .optional()
+        .describe("Shipping address"),
+      billingAddress: z
+        .object({
+          line1: z.string(),
+          line2: z.string().optional(),
+          city: z.string(),
+          region: z.string().optional(),
+          postalCode: z.string(),
+          country: z.string(),
+        })
+        .optional()
+        .describe("Billing address (if different from shipping)"),
+      customerEmail: z.string().email().optional(),
+      customerName: z.string().optional(),
     },
-    async ({ sessionId, shippingAddress, discountCode }) => {
+    async ({ sessionId, shippingAddress, billingAddress, customerEmail, customerName }) => {
       try {
-        const response = await fetch(
+        const updates: Record<string, unknown> = {};
+        if (shippingAddress) updates.shippingAddress = shippingAddress;
+        if (billingAddress) updates.billingAddress = billingAddress;
+        if (customerEmail || customerName) {
+          updates.customer = {
+            contact: {
+              ...(customerName && { name: customerName }),
+              ...(customerEmail && { email: customerEmail }),
+            },
+          };
+        }
+
+        const { ok, data } = await apiCall(
           `${config.merchantEndpoint}/ucp/checkout/${sessionId}`,
           {
             method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ shippingAddress, discountCode }),
+            body: JSON.stringify(updates),
           }
         );
-        const session = await response.json();
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(session, null, 2),
-            },
-          ],
-        };
+        return toolResponse(data, !ok);
       } catch (error) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error updating checkout: ${error}`,
-            },
-          ],
-          isError: true,
-        };
+        return toolResponse(`Error updating checkout: ${error}`, true);
+      }
+    }
+  );
+
+  server.tool(
+    "cancel_checkout",
+    "Cancel/abandon a checkout session. Use when the user wants to stop the checkout process.",
+    {
+      sessionId: z.string().describe("The checkout session ID to cancel"),
+      reason: z.string().optional().describe("Reason for cancellation"),
+    },
+    async ({ sessionId, reason }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/checkout/${sessionId}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ status: "CANCELLED", cancelReason: reason }),
+          }
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error cancelling checkout: ${error}`, true);
+      }
+    }
+  );
+
+  // ============================================
+  // DISCOUNTS
+  // ============================================
+
+  server.tool(
+    "apply_discount",
+    "Apply a promotional discount code to a checkout session.",
+    {
+      sessionId: z.string().describe("The checkout session ID"),
+      code: z.string().describe("The promotional/discount code to apply"),
+    },
+    async ({ sessionId, code }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/checkout/${sessionId}/discount`,
+          {
+            method: "POST",
+            body: JSON.stringify({ code }),
+          }
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error applying discount: ${error}`, true);
+      }
+    }
+  );
+
+  server.tool(
+    "remove_discount",
+    "Remove a previously applied discount from a checkout session.",
+    {
+      sessionId: z.string().describe("The checkout session ID"),
+      discountId: z.string().describe("The discount ID to remove"),
+    },
+    async ({ sessionId, discountId }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/checkout/${sessionId}/discount/${discountId}`,
+          {
+            method: "DELETE",
+          }
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error removing discount: ${error}`, true);
+      }
+    }
+  );
+
+  // ============================================
+  // SHIPPING
+  // ============================================
+
+  server.tool(
+    "get_shipping_options",
+    "Get available shipping options for a checkout session. Requires shipping address to be set first.",
+    {
+      sessionId: z.string().describe("The checkout session ID"),
+    },
+    async ({ sessionId }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/checkout/${sessionId}/shipping-options`
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error getting shipping options: ${error}`, true);
+      }
+    }
+  );
+
+  server.tool(
+    "select_shipping",
+    "Select a shipping option for the checkout session.",
+    {
+      sessionId: z.string().describe("The checkout session ID"),
+      shippingOptionId: z.string().describe("The ID of the shipping option to select"),
+    },
+    async ({ sessionId, shippingOptionId }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/checkout/${sessionId}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ selectedShippingOptionId: shippingOptionId }),
+          }
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error selecting shipping: ${error}`, true);
+      }
+    }
+  );
+
+  // ============================================
+  // PAYMENT
+  // ============================================
+
+  server.tool(
+    "get_payment_methods",
+    "Get available payment methods for a checkout session.",
+    {
+      sessionId: z.string().describe("The checkout session ID"),
+    },
+    async ({ sessionId }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/checkout/${sessionId}/payment-methods`
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error getting payment methods: ${error}`, true);
+      }
+    }
+  );
+
+  server.tool(
+    "complete_payment",
+    "Complete the checkout by processing payment. This finalizes the order.",
+    {
+      sessionId: z.string().describe("The checkout session ID"),
+      paymentMethodType: z
+        .string()
+        .describe("Payment method type (e.g., 'card', 'google_pay', 'apple_pay')"),
+      paymentToken: z
+        .string()
+        .optional()
+        .describe("Payment token from payment provider (if required)"),
+      savePaymentMethod: z
+        .boolean()
+        .optional()
+        .describe("Whether to save payment method for future use"),
+    },
+    async ({ sessionId, paymentMethodType, paymentToken, savePaymentMethod }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/checkout/${sessionId}/complete`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              paymentMethod: {
+                type: paymentMethodType,
+                token: paymentToken,
+              },
+              savePaymentMethod,
+            }),
+          }
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error completing payment: ${error}`, true);
+      }
+    }
+  );
+
+  // ============================================
+  // ORDERS
+  // ============================================
+
+  server.tool(
+    "get_order",
+    "Get details of an order by order ID.",
+    {
+      orderId: z.string().describe("The order ID"),
+    },
+    async ({ orderId }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/orders/${orderId}`
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error getting order: ${error}`, true);
+      }
+    }
+  );
+
+  server.tool(
+    "get_order_status",
+    "Get the current status of an order including fulfillment and shipping info.",
+    {
+      orderId: z.string().describe("The order ID"),
+    },
+    async ({ orderId }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/orders/${orderId}/status`
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error getting order status: ${error}`, true);
+      }
+    }
+  );
+
+  server.tool(
+    "list_orders",
+    "List orders for a customer.",
+    {
+      customerId: z.string().optional().describe("Filter by customer ID"),
+      status: z
+        .enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"])
+        .optional()
+        .describe("Filter by order status"),
+      limit: z.number().optional().describe("Maximum number of orders to return (default 20)"),
+    },
+    async ({ customerId, status, limit }) => {
+      try {
+        const params = new URLSearchParams();
+        if (customerId) params.set("customerId", customerId);
+        if (status) params.set("status", status);
+        if (limit) params.set("limit", String(limit));
+
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/orders?${params.toString()}`
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error listing orders: ${error}`, true);
+      }
+    }
+  );
+
+  // ============================================
+  // RETURNS
+  // ============================================
+
+  server.tool(
+    "request_return",
+    "Request a return for items in an order.",
+    {
+      orderId: z.string().describe("The order ID"),
+      items: z
+        .array(
+          z.object({
+            lineItemId: z.string(),
+            quantity: z.number(),
+          })
+        )
+        .describe("Items to return"),
+      reason: z
+        .enum([
+          "DEFECTIVE",
+          "WRONG_ITEM",
+          "NOT_AS_DESCRIBED",
+          "CHANGED_MIND",
+          "BETTER_PRICE_FOUND",
+          "ARRIVED_LATE",
+          "OTHER",
+        ])
+        .describe("Reason for return"),
+      reasonDetails: z.string().optional().describe("Additional details about the return reason"),
+    },
+    async ({ orderId, items, reason, reasonDetails }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/orders/${orderId}/returns`,
+          {
+            method: "POST",
+            body: JSON.stringify({ items, reason, reasonDetails }),
+          }
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error requesting return: ${error}`, true);
       }
     }
   );
