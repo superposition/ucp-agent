@@ -15,6 +15,11 @@ import {
   ucpAgentValidator,
   type SecurityConfig,
 } from "./security";
+import {
+  getProducts,
+  getProductById,
+  getCategories,
+} from "../catalog/catalog-loader";
 
 export interface UCPServerConfig {
   merchantId: string;
@@ -105,6 +110,10 @@ export function createUCPServer(config: UCPServerConfig) {
           name: "Shopping",
           capabilities: [
             {
+              id: "dev.ucp.catalog.products",
+              version: "1.0.0",
+            },
+            {
               id: "dev.ucp.shopping.checkout",
               version: "1.0.0",
               extensions: ["discount", "fulfillment"],
@@ -138,6 +147,44 @@ export function createUCPServer(config: UCPServerConfig) {
       supportedCountries: ["US", "GB", "DE", "FR"],
     };
     return c.json(discovery);
+  });
+
+  // ============================================
+  // PRODUCT CATALOG
+  // ============================================
+
+  app.get("/ucp/products", async (c) => {
+    const category = c.req.query("category");
+    const search = c.req.query("search");
+    const inStockParam = c.req.query("inStock");
+    const inStock = inStockParam === "true" ? true : inStockParam === "false" ? false : undefined;
+
+    const products = await getProducts({ category, search, inStock });
+
+    return c.json({
+      products,
+      total: products.length,
+    });
+  });
+
+  app.get("/ucp/products/:productId", async (c) => {
+    const productId = c.req.param("productId");
+    const product = await getProductById(productId);
+
+    if (!product) {
+      return c.json({ error: "Product not found" }, 404);
+    }
+
+    return c.json(product);
+  });
+
+  app.get("/ucp/categories", async (c) => {
+    const categories = await getCategories();
+
+    return c.json({
+      categories,
+      total: categories.length,
+    });
   });
 
   // ============================================

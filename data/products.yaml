@@ -1,0 +1,184 @@
+categories:
+  - id: dubai-chocolate
+    name: Dubai Chocolate
+    description: Premium Dubai-style pistachio chocolate treats
+
+  - id: labubu
+    name: Labubu
+    description: Collectible Labubu figurines and plushies
+
+products:
+  # Dubai Chocolate
+  - id: choc-001
+    name: Dubai Pistachio Chocolate Bar
+    description: The viral sensation - premium milk chocolate filled with creamy pistachio paste and crunchy kadayif
+    price:
+      amount: "24.99"
+      currency: USD
+    sku: DPC-001
+    category: dubai-chocolate
+    imageUrl: https://example.com/images/dubai-choc-bar.jpg
+    inStock: true
+    stockQuantity: 100
+    attributes:
+      weight: 200g
+      origin: Dubai
+
+  - id: choc-002
+    name: Dubai Chocolate Box (6 pieces)
+    description: Assorted Dubai-style chocolates with pistachio, kadayif, and tahini fillings
+    price:
+      amount: "39.99"
+      currency: USD
+    sku: DPC-002
+    category: dubai-chocolate
+    imageUrl: https://example.com/images/dubai-choc-box.jpg
+    inStock: true
+    stockQuantity: 50
+    attributes:
+      pieces: "6"
+      weight: 300g
+
+  - id: choc-003
+    name: Dubai Dark Chocolate Pistachio Bar
+    description: Rich 70% dark chocolate with roasted pistachio cream and crispy kadayif threads
+    price:
+      amount: "27.99"
+      currency: USD
+    sku: DPC-003
+    category: dubai-chocolate
+    imageUrl: https://example.com/images/dubai-dark-choc.jpg
+    inStock: true
+    stockQuantity: 75
+    attributes:
+      weight: 200g
+      cocoa: 70%
+
+  - id: choc-004
+    name: Dubai Chocolate Gift Set
+    description: Luxury gift box with 12 assorted Dubai chocolates in premium packaging
+    price:
+      amount: "69.99"
+      currency: USD
+    sku: DPC-004
+    category: dubai-chocolate
+    imageUrl: https://example.com/images/dubai-gift-set.jpg
+    inStock: true
+    stockQuantity: 25
+    attributes:
+      pieces: "12"
+      weight: 600g
+      packaging: Gift Box
+
+  - id: choc-005
+    name: Dubai White Chocolate Pistachio
+    description: Creamy white chocolate with pistachio butter and crunchy kadayif
+    price:
+      amount: "24.99"
+      currency: USD
+    sku: DPC-005
+    category: dubai-chocolate
+    imageUrl: https://example.com/images/dubai-white-choc.jpg
+    inStock: false
+    stockQuantity: 0
+    attributes:
+      weight: 200g
+      type: White Chocolate
+
+  # Labubu
+  - id: labubu-001
+    name: Labubu The Monsters Blind Box
+    description: Original Pop Mart Labubu The Monsters series blind box - which one will you get?
+    price:
+      amount: "16.99"
+      currency: USD
+    sku: LBB-001
+    category: labubu
+    imageUrl: https://example.com/images/labubu-blind-box.jpg
+    inStock: true
+    stockQuantity: 200
+    attributes:
+      series: The Monsters
+      type: Blind Box
+      size: 8cm
+
+  - id: labubu-002
+    name: Labubu Zimomo Plush (Large)
+    description: Super soft Labubu Zimomo plush toy - perfect for hugging!
+    price:
+      amount: "45.99"
+      currency: USD
+    sku: LBB-002
+    category: labubu
+    imageUrl: https://example.com/images/labubu-plush-large.jpg
+    inStock: true
+    stockQuantity: 30
+    attributes:
+      size: 40cm
+      material: Plush
+      series: Zimomo
+
+  - id: labubu-003
+    name: Labubu Have a Seat Series
+    description: Collectible Labubu sitting figurine - perfect desk companion
+    price:
+      amount: "19.99"
+      currency: USD
+    sku: LBB-003
+    category: labubu
+    imageUrl: https://example.com/images/labubu-have-a-seat.jpg
+    inStock: true
+    stockQuantity: 80
+    attributes:
+      series: Have a Seat
+      type: Figurine
+      size: 10cm
+
+  - id: labubu-004
+    name: Labubu Macaron Series Blind Box
+    description: Sweet pastel-colored Labubu Macaron series - adorable collectible!
+    price:
+      amount: "18.99"
+      currency: USD
+    sku: LBB-004
+    category: labubu
+    imageUrl: https://example.com/images/labubu-macaron.jpg
+    inStock: true
+    stockQuantity: 150
+    attributes:
+      series: Macaron
+      type: Blind Box
+      size: 8cm
+
+  - id: labubu-005
+    name: Labubu XL Plush Keychain
+    description: Take Labubu everywhere! Soft plush keychain in assorted colors
+    price:
+      amount: "12.99"
+      currency: USD
+    sku: LBB-005
+    category: labubu
+    imageUrl: https://example.com/images/labubu-keychain.jpg
+    inStock: true
+    stockQuantity: 300
+    attributes:
+      size: 12cm
+      type: Keychain
+      material: Plush
+
+  - id: labubu-006
+    name: Labubu Limited Edition Gold
+    description: Rare limited edition golden Labubu - only 500 made worldwide!
+    price:
+      amount: "89.99"
+      currency: USD
+    sku: LBB-006
+    category: labubu
+    imageUrl: https://example.com/images/labubu-gold.jpg
+    inStock: true
+    stockQuantity: 5
+    attributes:
+      series: Limited Edition
+      type: Figurine
+      size: 15cm
+      edition: "500"

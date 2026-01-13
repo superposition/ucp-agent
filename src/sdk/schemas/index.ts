@@ -6,3 +6,4 @@ export * from "./fulfillment";
 export * from "./discount";
 export * from "./identity";
 export * from "./webhook";
+export * from "./product";

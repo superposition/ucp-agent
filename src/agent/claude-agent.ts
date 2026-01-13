@@ -40,14 +40,16 @@ export interface UCPAgentConfig {
 
 const SYSTEM_PROMPT = `You are a UCP (Universal Commerce Protocol) shopping assistant agent. You help users discover products, manage their cart, and complete purchases through UCP-compliant merchants.
 
-When a user wants to make a purchase, guide them through:
+When a user wants to shop, guide them through:
 1. First discover what the merchant supports using discover_merchant
-2. Help them build their cart
-3. Create a checkout session using create_checkout
-4. Collect necessary information (shipping, billing) using update_checkout
-5. Get checkout status using get_checkout
+2. Show them available categories using list_categories
+3. Help them browse products using list_products (can filter by category, search, or stock)
+4. Get detailed product info using get_product when they're interested
+5. Create a checkout session using create_checkout when they're ready to buy
+6. Collect necessary information (shipping, billing) using update_checkout
+7. Get checkout status using get_checkout
 
-Always be helpful, clear about pricing, and transparent about the checkout process.
+Always be helpful, show product details and pricing clearly, and guide users through the shopping experience.
 Use the tools provided to interact with the merchant's UCP endpoints.`;
 
 // Define tools for Claude to use
@@ -59,6 +61,51 @@ const UCP_TOOLS: Tool[] = [
       type: "object" as const,
       properties: {},
       required: [],
+    },
+  },
+  {
+    name: "list_categories",
+    description: "List all available product categories from the merchant's catalog.",
+    input_schema: {
+      type: "object" as const,
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "list_products",
+    description: "List products from the merchant's catalog. Can filter by category, search term, or stock availability.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        category: {
+          type: "string",
+          description: "Filter by category ID (e.g., 'electronics', 'clothing')",
+        },
+        search: {
+          type: "string",
+          description: "Search term to filter products by name or description",
+        },
+        inStock: {
+          type: "boolean",
+          description: "Filter by stock availability (true = in stock only)",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_product",
+    description: "Get detailed information about a specific product by its ID.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        productId: {
+          type: "string",
+          description: "The product ID to look up",
+        },
+      },
+      required: ["productId"],
     },
   },
   {
@@ -344,6 +391,33 @@ export class UCPClaudeAgent {
     }
   }
 
+  private async listCategories(): Promise<unknown> {
+    const url = `${this.config.merchantEndpoint}/ucp/categories`;
+    this.logger.debug("Listing categories");
+    const response = await fetchWithRetry(url, { timeoutMs: this.config.timeoutMs });
+    return response.json();
+  }
+
+  private async listProducts(options?: { category?: string; search?: string; inStock?: boolean }): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (options?.category) params.set("category", options.category);
+    if (options?.search) params.set("search", options.search);
+    if (options?.inStock !== undefined) params.set("inStock", String(options.inStock));
+
+    const queryString = params.toString();
+    const url = `${this.config.merchantEndpoint}/ucp/products${queryString ? `?${queryString}` : ""}`;
+    this.logger.debug("Listing products", { options });
+    const response = await fetchWithRetry(url, { timeoutMs: this.config.timeoutMs });
+    return response.json();
+  }
+
+  private async getProduct(productId: string): Promise<unknown> {
+    const url = `${this.config.merchantEndpoint}/ucp/products/${productId}`;
+    this.logger.debug("Getting product", { productId });
+    const response = await fetchWithRetry(url, { timeoutMs: this.config.timeoutMs });
+    return response.json();
+  }
+
   private async executeTool(name: string, input: Record<string, unknown>): Promise<string> {
     this.logger.debug(`Executing tool: ${name}`, { input });
 
@@ -351,6 +425,18 @@ export class UCPClaudeAgent {
       switch (name) {
         case "discover_merchant": {
           const result = await this.discoverMerchant();
+          return JSON.stringify(result, null, 2);
+        }
+        case "list_categories": {
+          const result = await this.listCategories();
+          return JSON.stringify(result, null, 2);
+        }
+        case "list_products": {
+          const result = await this.listProducts(input as { category?: string; search?: string; inStock?: boolean });
+          return JSON.stringify(result, null, 2);
+        }
+        case "get_product": {
+          const result = await this.getProduct(input.productId as string);
           return JSON.stringify(result, null, 2);
         }
         case "create_checkout": {

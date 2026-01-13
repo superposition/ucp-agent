@@ -251,6 +251,66 @@ export function createUCPMCPServer(config: MCPServerConfig) {
     }
   );
 
+  // catalog://products - Product catalog
+  server.resource(
+    "catalog://products",
+    "Available products from the merchant catalog",
+    async () => {
+      try {
+        const { ok, data } = await apiCall(`${config.merchantEndpoint}/ucp/products`);
+        return {
+          contents: [
+            {
+              uri: "catalog://products",
+              mimeType: "application/json",
+              text: JSON.stringify(ok ? data : { error: "Failed to fetch products" }, null, 2),
+            },
+          ],
+        };
+      } catch {
+        return {
+          contents: [
+            {
+              uri: "catalog://products",
+              mimeType: "application/json",
+              text: JSON.stringify({ error: "Failed to fetch products" }),
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // catalog://categories - Product categories
+  server.resource(
+    "catalog://categories",
+    "Available product categories from the merchant",
+    async () => {
+      try {
+        const { ok, data } = await apiCall(`${config.merchantEndpoint}/ucp/categories`);
+        return {
+          contents: [
+            {
+              uri: "catalog://categories",
+              mimeType: "application/json",
+              text: JSON.stringify(ok ? data : { error: "Failed to fetch categories" }, null, 2),
+            },
+          ],
+        };
+      } catch {
+        return {
+          contents: [
+            {
+              uri: "catalog://categories",
+              mimeType: "application/json",
+              text: JSON.stringify({ error: "Failed to fetch categories" }),
+            },
+          ],
+        };
+      }
+    }
+  );
+
   // ============================================
   // PROMPTS
   // ============================================
@@ -526,6 +586,67 @@ Please fetch the order details first.`,
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error discovering merchant: ${error}`, true);
+      }
+    }
+  );
+
+  // ============================================
+  // PRODUCT CATALOG
+  // ============================================
+
+  server.tool(
+    "list_products",
+    "List available products from the merchant catalog. Can filter by category, search term, or stock status.",
+    {
+      category: z.string().optional().describe("Filter by category ID"),
+      search: z.string().optional().describe("Search term to filter products by name or description"),
+      inStock: z.boolean().optional().describe("Filter by stock availability (true = in stock only)"),
+    },
+    async ({ category, search, inStock }) => {
+      try {
+        const params = new URLSearchParams();
+        if (category) params.set("category", category);
+        if (search) params.set("search", search);
+        if (inStock !== undefined) params.set("inStock", String(inStock));
+
+        const queryString = params.toString();
+        const url = `${config.merchantEndpoint}/ucp/products${queryString ? `?${queryString}` : ""}`;
+        const { ok, data } = await apiCall(url);
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error listing products: ${error}`, true);
+      }
+    }
+  );
+
+  server.tool(
+    "get_product",
+    "Get detailed information about a specific product by its ID.",
+    {
+      productId: z.string().describe("The product ID to look up"),
+    },
+    async ({ productId }) => {
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/products/${productId}`
+        );
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error getting product: ${error}`, true);
+      }
+    }
+  );
+
+  server.tool(
+    "list_categories",
+    "List available product categories from the merchant catalog.",
+    {},
+    async () => {
+      try {
+        const { ok, data } = await apiCall(`${config.merchantEndpoint}/ucp/categories`);
+        return toolResponse(data, !ok);
+      } catch (error) {
+        return toolResponse(`Error listing categories: ${error}`, true);
       }
     }
   );
