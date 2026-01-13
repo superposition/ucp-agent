@@ -1,0 +1,27 @@
+{
+  "name": "ucp-agent",
+  "version": "0.1.0",
+  "description": "Universal Commerce Protocol (UCP) agent with Claude integration",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun run --watch index.ts",
+    "mcp": "bun run src/mcp/run-mcp.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "hono": "^4.11.3",
+    "zod": "^4.3.5"
+  }
+}
