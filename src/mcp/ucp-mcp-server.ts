@@ -252,6 +252,263 @@ export function createUCPMCPServer(config: MCPServerConfig) {
   );
 
   // ============================================
+  // PROMPTS
+  // ============================================
+
+  // Start shopping - Initialize shopping flow
+  server.prompt(
+    "start_shopping",
+    "Initialize a shopping session with the merchant. Use this to begin a new purchase flow.",
+    {
+      customerName: z.string().optional().describe("Customer's name for personalization"),
+      customerEmail: z.string().email().optional().describe("Customer's email for order updates"),
+    },
+    async ({ customerName, customerEmail }) => {
+      let context = `You are helping a customer shop at ${config.merchantEndpoint}.`;
+
+      if (customerName) {
+        context += ` The customer's name is ${customerName}.`;
+      }
+      if (customerEmail) {
+        context += ` Their email is ${customerEmail}.`;
+      }
+
+      // Include current merchant capabilities if available
+      let capabilitiesInfo = "";
+      if (state.merchantCapabilities) {
+        capabilitiesInfo = `\n\nMerchant: ${state.merchantCapabilities.merchantName} (ID: ${state.merchantCapabilities.merchantId})`;
+      }
+
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `${context}${capabilitiesInfo}
+
+To start shopping:
+1. First use the discover_merchant tool to understand what the merchant offers
+2. Help the customer browse and select products
+3. Use create_checkout to start a checkout when they're ready
+4. Guide them through providing shipping and payment information
+
+Please begin by discovering what this merchant offers.`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Complete checkout - Guide through payment
+  server.prompt(
+    "complete_checkout",
+    "Guide the customer through completing their checkout with shipping and payment.",
+    {
+      sessionId: z.string().optional().describe("Checkout session ID (uses current session if not provided)"),
+    },
+    async ({ sessionId }) => {
+      const targetSessionId = sessionId || state.currentSessionId;
+
+      if (!targetSessionId) {
+        return {
+          messages: [
+            {
+              role: "user",
+              content: {
+                type: "text",
+                text: "There is no active checkout session. Please help the customer add items to their cart first using create_checkout.",
+              },
+            },
+          ],
+        };
+      }
+
+      // Get current session state
+      const session = state.checkoutSessions.get(targetSessionId);
+      let sessionInfo = "";
+      if (session) {
+        sessionInfo = `\n\nCurrent checkout:
+- Session ID: ${session.id}
+- Status: ${session.status}
+- Items: ${session.cart.items.length}
+- Total: ${session.cart.total.amount} ${session.cart.total.currency}`;
+      }
+
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `Help the customer complete their checkout (Session: ${targetSessionId}).${sessionInfo}
+
+Steps to complete checkout:
+1. Use get_checkout to see current session status
+2. Use update_checkout to add shipping address if needed
+3. Use get_shipping_options to show available shipping methods
+4. Use select_shipping to choose a shipping option
+5. Use get_payment_methods to show payment options
+6. Use complete_payment to finalize the order
+
+Please check the current checkout status and guide the customer through the remaining steps.`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Track order - Post-purchase queries
+  server.prompt(
+    "track_order",
+    "Help the customer track their order status and shipment.",
+    {
+      orderId: z.string().describe("The order ID to track"),
+    },
+    async ({ orderId }) => {
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `The customer wants to track order ${orderId}.
+
+Use these tools to help:
+1. Use get_order to get full order details
+2. Use get_order_status to see current fulfillment status
+
+Please fetch the order information and provide the customer with:
+- Current order status
+- Shipping/tracking information if available
+- Expected delivery date if known
+- Any actions they can take (like requesting a return)`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Apply discount - Coupon/promo workflow
+  server.prompt(
+    "apply_discount",
+    "Help the customer apply a discount or promotional code to their checkout.",
+    {
+      code: z.string().describe("The discount/promo code to apply"),
+      sessionId: z.string().optional().describe("Checkout session ID (uses current session if not provided)"),
+    },
+    async ({ code, sessionId }) => {
+      const targetSessionId = sessionId || state.currentSessionId;
+
+      if (!targetSessionId) {
+        return {
+          messages: [
+            {
+              role: "user",
+              content: {
+                type: "text",
+                text: `The customer wants to use discount code "${code}" but there is no active checkout session. Please help them add items to their cart first using create_checkout.`,
+              },
+            },
+          ],
+        };
+      }
+
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `The customer wants to apply discount code "${code}" to their checkout (Session: ${targetSessionId}).
+
+Steps:
+1. Use apply_discount with the code and session ID
+2. If successful, show the customer the updated cart total with the discount applied
+3. If the code is invalid or expired, explain the issue and ask if they have another code
+
+Please try applying the discount code now.`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Browse products - Product discovery
+  server.prompt(
+    "browse_products",
+    "Help the customer browse and find products from the merchant.",
+    {
+      category: z.string().optional().describe("Product category to browse"),
+      searchQuery: z.string().optional().describe("Search term for products"),
+    },
+    async ({ category, searchQuery }) => {
+      let browseContext = "The customer wants to browse products.";
+      if (category) {
+        browseContext = `The customer wants to browse products in the "${category}" category.`;
+      }
+      if (searchQuery) {
+        browseContext = `The customer is searching for: "${searchQuery}"`;
+      }
+
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `${browseContext}
+
+First, use discover_merchant to understand what products and categories are available.
+Then help the customer find what they're looking for.
+
+When they find products they want:
+1. Show clear pricing information
+2. Confirm quantities
+3. Offer to add items to checkout using create_checkout`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Request return - Return workflow
+  server.prompt(
+    "request_return",
+    "Help the customer initiate a return for items from their order.",
+    {
+      orderId: z.string().describe("The order ID containing items to return"),
+    },
+    async ({ orderId }) => {
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `The customer wants to return items from order ${orderId}.
+
+Steps:
+1. Use get_order to see the order details and items
+2. Ask which items they want to return and the quantities
+3. Ask for the return reason (defective, wrong item, changed mind, etc.)
+4. Use request_return to submit the return request
+5. Provide the customer with any return instructions or next steps
+
+Please fetch the order details first.`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // ============================================
   // DISCOVERY
   // ============================================
 
