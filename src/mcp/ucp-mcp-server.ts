@@ -1,9 +1,30 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import type { CheckoutSession, UCPDiscoveryResponse, Cart } from "../sdk";
 
 export interface MCPServerConfig {
   merchantEndpoint: string;
+}
+
+// ============================================
+// STATE MANAGEMENT
+// ============================================
+
+interface MCPServerState {
+  currentSessionId: string | null;
+  checkoutSessions: Map<string, CheckoutSession>;
+  merchantCapabilities: UCPDiscoveryResponse | null;
+  lastDiscoveryAt: number | null;
+}
+
+function createState(): MCPServerState {
+  return {
+    currentSessionId: null,
+    checkoutSessions: new Map(),
+    merchantCapabilities: null,
+    lastDiscoveryAt: null,
+  };
 }
 
 // Helper to create consistent tool responses
@@ -42,6 +63,194 @@ export function createUCPMCPServer(config: MCPServerConfig) {
     version: "1.0.0",
   });
 
+  // Initialize state
+  const state = createState();
+
+  // Helper to update session state and notify
+  function updateSessionState(session: CheckoutSession) {
+    state.checkoutSessions.set(session.id, session);
+    state.currentSessionId = session.id;
+  }
+
+  // ============================================
+  // RESOURCES
+  // ============================================
+
+  // checkout://current - Current checkout session
+  server.resource(
+    "checkout://current",
+    "Current checkout session state including cart, shipping, and payment status",
+    async () => {
+      if (!state.currentSessionId) {
+        return {
+          contents: [
+            {
+              uri: "checkout://current",
+              mimeType: "application/json",
+              text: JSON.stringify({ error: "No active checkout session" }),
+            },
+          ],
+        };
+      }
+
+      // Fetch latest state from server
+      try {
+        const { ok, data } = await apiCall(
+          `${config.merchantEndpoint}/ucp/checkout/${state.currentSessionId}`
+        );
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+        }
+        return {
+          contents: [
+            {
+              uri: "checkout://current",
+              mimeType: "application/json",
+              text: JSON.stringify(data, null, 2),
+            },
+          ],
+        };
+      } catch {
+        const cached = state.checkoutSessions.get(state.currentSessionId);
+        return {
+          contents: [
+            {
+              uri: "checkout://current",
+              mimeType: "application/json",
+              text: JSON.stringify(
+                cached || { error: "Failed to fetch checkout session" },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    }
+  );
+
+
+  // merchant://capabilities - Cached discovery response
+  server.resource(
+    "merchant://capabilities",
+    "Merchant UCP capabilities from /.well-known/ucp discovery",
+    async () => {
+      // Check if we need to refresh (cache for 5 minutes)
+      const cacheMs = 5 * 60 * 1000;
+      const needsRefresh =
+        !state.merchantCapabilities ||
+        !state.lastDiscoveryAt ||
+        Date.now() - state.lastDiscoveryAt > cacheMs;
+
+      if (needsRefresh) {
+        try {
+          const { ok, data } = await apiCall(
+            `${config.merchantEndpoint}/.well-known/ucp`
+          );
+          if (ok && data) {
+            state.merchantCapabilities = data as UCPDiscoveryResponse;
+            state.lastDiscoveryAt = Date.now();
+          }
+        } catch {
+          // Use cached if available
+        }
+      }
+
+      return {
+        contents: [
+          {
+            uri: "merchant://capabilities",
+            mimeType: "application/json",
+            text: JSON.stringify(
+              state.merchantCapabilities || { error: "No capabilities discovered" },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
+  // cart://items - Current cart contents
+  server.resource(
+    "cart://items",
+    "Current cart items from active checkout session",
+    async () => {
+      if (!state.currentSessionId) {
+        return {
+          contents: [
+            {
+              uri: "cart://items",
+              mimeType: "application/json",
+              text: JSON.stringify({ items: [], total: { amount: "0", currency: "USD" } }),
+            },
+          ],
+        };
+      }
+
+      const session = state.checkoutSessions.get(state.currentSessionId);
+      const cart = session?.cart || { items: [], total: { amount: "0", currency: "USD" } };
+
+      return {
+        contents: [
+          {
+            uri: "cart://items",
+            mimeType: "application/json",
+            text: JSON.stringify(cart, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // cart://summary - Cart summary with totals
+  server.resource(
+    "cart://summary",
+    "Cart summary with item count, subtotal, discounts, and total",
+    async () => {
+      if (!state.currentSessionId) {
+        return {
+          contents: [
+            {
+              uri: "cart://summary",
+              mimeType: "application/json",
+              text: JSON.stringify({
+                itemCount: 0,
+                subtotal: { amount: "0", currency: "USD" },
+                discounts: [],
+                shipping: null,
+                total: { amount: "0", currency: "USD" },
+              }),
+            },
+          ],
+        };
+      }
+
+      const session = state.checkoutSessions.get(state.currentSessionId);
+      const cart = session?.cart;
+
+      const summary = {
+        itemCount: cart?.items?.reduce((sum, item) => sum + item.quantity, 0) || 0,
+        subtotal: cart?.subtotal || { amount: "0", currency: "USD" },
+        discount: cart?.discount || null,
+        shipping: cart?.shipping || null,
+        tax: cart?.tax || null,
+        total: cart?.total || { amount: "0", currency: "USD" },
+      };
+
+      return {
+        contents: [
+          {
+            uri: "cart://summary",
+            mimeType: "application/json",
+            text: JSON.stringify(summary, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
   // ============================================
   // DISCOVERY
   // ============================================
@@ -53,6 +262,10 @@ export function createUCPMCPServer(config: MCPServerConfig) {
     async () => {
       try {
         const { ok, data } = await apiCall(`${config.merchantEndpoint}/.well-known/ucp`);
+        if (ok && data) {
+          state.merchantCapabilities = data as UCPDiscoveryResponse;
+          state.lastDiscoveryAt = Date.now();
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error discovering merchant: ${error}`, true);
@@ -129,6 +342,9 @@ export function createUCPMCPServer(config: MCPServerConfig) {
           method: "POST",
           body: JSON.stringify(request),
         });
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error creating checkout: ${error}`, true);
@@ -147,6 +363,9 @@ export function createUCPMCPServer(config: MCPServerConfig) {
         const { ok, data } = await apiCall(
           `${config.merchantEndpoint}/ucp/checkout/${sessionId}`
         );
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error getting checkout: ${error}`, true);
@@ -205,6 +424,9 @@ export function createUCPMCPServer(config: MCPServerConfig) {
             body: JSON.stringify(updates),
           }
         );
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error updating checkout: ${error}`, true);
@@ -228,6 +450,13 @@ export function createUCPMCPServer(config: MCPServerConfig) {
             body: JSON.stringify({ status: "CANCELLED", cancelReason: reason }),
           }
         );
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+          // Clear current session if cancelled
+          if (state.currentSessionId === sessionId) {
+            state.currentSessionId = null;
+          }
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error cancelling checkout: ${error}`, true);
@@ -255,6 +484,9 @@ export function createUCPMCPServer(config: MCPServerConfig) {
             body: JSON.stringify({ code }),
           }
         );
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error applying discount: ${error}`, true);
@@ -277,6 +509,9 @@ export function createUCPMCPServer(config: MCPServerConfig) {
             method: "DELETE",
           }
         );
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error removing discount: ${error}`, true);
@@ -322,6 +557,9 @@ export function createUCPMCPServer(config: MCPServerConfig) {
             body: JSON.stringify({ selectedShippingOptionId: shippingOptionId }),
           }
         );
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error selecting shipping: ${error}`, true);
@@ -383,6 +621,9 @@ export function createUCPMCPServer(config: MCPServerConfig) {
             }),
           }
         );
+        if (ok && data) {
+          updateSessionState(data as CheckoutSession);
+        }
         return toolResponse(data, !ok);
       } catch (error) {
         return toolResponse(`Error completing payment: ${error}`, true);
@@ -504,8 +745,19 @@ export function createUCPMCPServer(config: MCPServerConfig) {
     }
   );
 
-  return server;
+  // Expose state for testing
+  return Object.assign(server, {
+    getState: () => state,
+    clearState: () => {
+      state.currentSessionId = null;
+      state.checkoutSessions.clear();
+      state.merchantCapabilities = null;
+      state.lastDiscoveryAt = null;
+    },
+  });
 }
+
+export type UCPMCPServer = ReturnType<typeof createUCPMCPServer>;
 
 // Run as standalone MCP server
 export async function runMCPServer(config: MCPServerConfig) {
